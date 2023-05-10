@@ -77,6 +77,9 @@ abstract class Editor {
   /// that the editor should do no further handling.
   Stream<html.MouseEvent> get onMouseDown;
 
+  /// Fired when the current current vim mode changes.
+  Stream<void> get onVimModeChange;
+
   void resize();
 
   void focus();
@@ -159,7 +162,7 @@ abstract class Document<E extends Editor> {
 
   void applyEdit(SourceEdit edit);
 
-  Stream get onChange;
+  Stream<void> get onChange;
 }
 
 class Annotation implements Comparable<Annotation> {

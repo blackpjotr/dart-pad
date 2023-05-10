@@ -21,7 +21,7 @@ class _QueryParams {
     final params = Map<String, String?>.from(url.queryParameters);
     params['id'] = gistId;
     url = url.replace(queryParameters: params);
-    window.history.replaceState({}, 'DartPad', url.toString());
+    window.history.replaceState(<String, dynamic>{}, 'DartPad', url.toString());
   }
 
   String? get gistId {
@@ -113,7 +113,13 @@ class _QueryParams {
     });
   }
 
-  static const List<String> _validChannels = ['stable', 'beta', 'old'];
+  static const List<String> _validChannels = [
+    'stable',
+    'beta',
+    'old',
+    'dev',
+    'master',
+  ];
 
   void _replaceQueryParameters(
       Map<String, String> Function(Map<String, String> params) fn) {
@@ -121,7 +127,7 @@ class _QueryParams {
     var params = Map<String, String>.from(url.queryParameters);
     params = fn(params);
     url = url.replace(queryParameters: params);
-    window.history.replaceState({}, 'DartPad', url.toString());
+    window.history.replaceState(<String, dynamic>{}, 'DartPad', url.toString());
   }
 
   String? _queryParam(String key) {

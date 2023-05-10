@@ -3,6 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import 'dart:async';
+import 'dart:convert' show json;
 import 'dart:html' hide Console;
 
 import 'package:markdown/markdown.dart' as markdown;
@@ -15,7 +16,6 @@ import 'core/dependencies.dart';
 import 'core/modules.dart';
 import 'dart_pad.dart';
 import 'documentation.dart';
-import 'editing/codemirror_options.dart';
 import 'editing/editor_codemirror.dart';
 import 'elements/analysis_results_controller.dart';
 import 'elements/button.dart';
@@ -51,12 +51,17 @@ void init() {
 
 class WorkshopUi extends EditorUi {
   late final WorkshopState _workshopState;
+  late final String _workshopId;
+  late final WorkshopStepStorage _workshopStepStorage;
   late final Splitter splitter;
   late final Splitter rightSplitter;
   late final DElement stepLabel;
   late final DElement previousStepButton;
   late final DElement nextStepButton;
   late final Console _console;
+  late final MDCButton resetButton;
+  late final MDCButton revertButton;
+  late final MDCButton redoButton;
   late final MDCButton showSolutionButton;
   late final Counter unreadConsoleCounter;
   late final DocHandler docHandler;
@@ -69,6 +74,7 @@ class WorkshopUi extends EditorUi {
   late final MDCButton editorUiOutputTab;
   late final MDCButton editorConsoleTab;
   late final MDCButton editorDocsTab;
+  bool solutionShownThisStep = false;
 
   WorkshopUi() {
     _init();
@@ -96,8 +102,8 @@ class WorkshopUi extends EditorUi {
     _updateInstructions();
     await _initModules();
     _initWorkshopUi();
-    initKeyBindings();
     _initEditor();
+    initKeyBindings();
     _initSplitters();
     _initStepButtons();
     _initStepListener();
@@ -126,8 +132,7 @@ class WorkshopUi extends EditorUi {
 
   void _initEditor() {
     // Set up CodeMirror
-    editor = (editorFactory as CodeMirrorFactory)
-        .createFromElement(_editorHost, options: codeMirrorOptions)
+    editor = (editorFactory as CodeMirrorFactory).createFromElement(_editorHost)
       ..theme = 'darkpad'
       ..mode = 'dart'
       ..keyMap = window.localStorage['codemirror_keymap'] ?? 'default'
@@ -136,6 +141,11 @@ class WorkshopUi extends EditorUi {
     context = WorkshopDartSourceProvider(editor);
     docHandler = DocHandler(editor, context);
 
+    // Put onchange handler on document and if there are changes
+    // store them in local storage.
+    editor.document.onChange
+        .debounce(Duration(milliseconds: 500))
+        .listen((_) => _handleChangeInUsersWork());
     editor.document.onChange.listen((_) => busyLight.on());
     editor.document.onChange
         .debounce(Duration(milliseconds: 1250))
@@ -153,6 +163,60 @@ class WorkshopUi extends EditorUi {
         }
       });
     });
+  }
+
+  void _handleChangeInUsersWork() {
+    // If the code is modified (not the solution or the starting snippet)...
+    if (fullDartSource != _workshopState.currentStep.snippet &&
+        fullDartSource != _workshopState.currentStep.solution) {
+      // Save
+      _workshopStepStorage.saveStep(
+          _workshopState.currentStepIndex, fullDartSource);
+
+      // The Revert button resets the users edits to the original snippet.
+      revertButton.clearAttr('hidden');
+
+      // If the user has previously shown the solution...
+      if (solutionShownThisStep) {
+        // Enable the show solution button
+        showSolutionButton.disabled = false;
+      }
+
+      // The redo button shows the user's edits again if they have previously
+      // shown the solution. Hide it.
+      redoButton.setAttr('hidden', 'true');
+      resetButton.clearAttr('disabled');
+    } else {
+      // The code has not been modified.
+      // If the solution is being shown...
+      if (fullDartSource == _workshopState.currentStep.solution) {
+        // Hide the Show Solution button.
+        showSolutionButton.disabled = true;
+
+        // If they haven't made an edit yet,
+        if (!_workshopStepStorage.hasStoredWork) {
+          // They showed the solution before ever making an edit, the only thing
+          // they can do is revert to original.
+          revertButton.clearAttr('hidden');
+        }
+      } else {
+        // Currently showing snippet.
+        revertButton.setAttr('hidden', 'true');
+        if (solutionShownThisStep) {
+          showSolutionButton.disabled = false;
+        }
+      }
+      redoButton.setAttr('hidden', 'true');
+      // Current source is same as snippet, but maybe there is saved source to go back to ?
+      final usersWork =
+          _workshopStepStorage.loadStep(_workshopState.currentStepIndex);
+      if (usersWork != null &&
+          usersWork != _workshopState.currentStep.snippet &&
+          usersWork != _workshopState.currentStep.solution) {
+        // Let them go back to what they had.
+        redoButton.clearAttr('hidden');
+      }
+    }
   }
 
   void _initWorkshopUi() {
@@ -200,9 +264,7 @@ class WorkshopUi extends EditorUi {
       editor.showCompletions();
     }, 'Completion');
 
-    keys.bind(['shift-ctrl-f', 'shift-macctrl-f'], () {
-      _format();
-    }, 'Format');
+    keys.bind(['shift-ctrl-f', 'shift-macctrl-f'], _format, 'Format');
 
     document.onKeyUp.listen((e) {
       if (editor.completionActive ||
@@ -225,6 +287,8 @@ class WorkshopUi extends EditorUi {
 
   Future<void> _loadWorkshop() async {
     final fetcher = _createWorkshopFetcher();
+    _workshopId = fetcher.workshopId;
+    _workshopStepStorage = WorkshopStepStorage(_workshopId);
     _workshopState = WorkshopState(await fetcher.fetch());
   }
 
@@ -251,7 +315,7 @@ class WorkshopUi extends EditorUi {
   void _checkForInitialStepHash() {
     if (window.location.hash != '') {
       // force a hash event so it our hash handler can evaluate hash and jump to step
-      final String hash = window.location.hash;
+      final hash = window.location.hash;
       window.location.hash = '';
       window.location.hash = hash;
     }
@@ -276,16 +340,15 @@ class WorkshopUi extends EditorUi {
   void _initStepListener() {
     window.onHashChange.listen((event) {
       if (window.location.hash.toLowerCase().startsWith('#step')) {
-        final RegExpMatch? match =
-            parseNumberOutRegExp.firstMatch(window.location.hash);
+        final match = parseNumberOutRegExp.firstMatch(window.location.hash);
         if (match != null) {
-          num? stepNum = num.tryParse(match[1]!);
+          var stepNum = num.tryParse(match[1]!);
           if (stepNum != null &&
               stepNum >= 1 &&
               stepNum <= _workshopState.totalSteps) {
             stepNum--;
             if (_workshopState.currentStepIndex != stepNum) {
-              // valid step and not the current one, so change
+              // Valid step and not the current one, so change.
               _workshopState.currentStepIndex = stepNum.toInt();
             }
           }
@@ -309,18 +372,42 @@ class WorkshopUi extends EditorUi {
 
   void _initButtons() {
     runButton = MDCButton(querySelector('#run-button') as ButtonElement)
-      ..onClick.listen((_) {
-        tabExpandController.showUI();
-        handleRun().then((success) {
-          if (!success) {
-            tabExpandController.toggleConsole();
-          }
-        });
+      ..onClick.listen((_) async {
+        await handleRun();
+        if (_workshopState.workshop.type == WorkshopType.dart) {
+          tabExpandController.state = TabState.console;
+        } else {
+          tabExpandController.state = TabState.ui;
+        }
       });
+
+    revertButton = MDCButton(querySelector('#revert-button') as ButtonElement,
+        isIcon: true)
+      ..setAttr('hidden', 'true')
+      ..onClick.listen((_) {
+        // Go back to the original snippet code.
+        if (fullDartSource != _workshopState.currentStep.snippet) {
+          editor.document.updateValue(_workshopState.currentStep.snippet);
+        }
+      });
+
+    redoButton =
+        MDCButton(querySelector('#redo-button') as ButtonElement, isIcon: true)
+          ..setAttr('hidden', 'true')
+          ..onClick.listen((_) {
+            // Go back to the users saved code.
+            final usersWork =
+                _workshopStepStorage.loadStep(_workshopState.currentStepIndex);
+            if (usersWork != null) {
+              editor.document.updateValue(usersWork);
+            }
+          });
 
     showSolutionButton =
         MDCButton(querySelector('#show-solution-btn') as ButtonElement)
           ..onClick.listen((_) => _handleShowSolution());
+    resetButton = MDCButton(querySelector('#reset-button') as ButtonElement)
+      ..onClick.listen((_) => _showResetDialog());
     formatButton = MDCButton(querySelector('#format-button') as ButtonElement)
       ..onClick.listen((_) => _format());
     clearConsoleButton = MDCButton(
@@ -349,14 +436,23 @@ class WorkshopUi extends EditorUi {
       showSolutionButton.element.style.visibility = null;
     }
     showSolutionButton.disabled = false;
+    solutionShownThisStep = false;
   }
 
   void _updateCode() {
-    editor.document.updateValue(_workshopState.currentStep.snippet);
+    // Check for code in the local storage for this step, and
+    // if found use that instead of snippet.
+    final usersWork =
+        _workshopStepStorage.loadStep(_workshopState.currentStepIndex);
+    if (usersWork != null) {
+      editor.document.updateValue(usersWork);
+    } else {
+      editor.document.updateValue(_workshopState.currentStep.snippet);
+    }
   }
 
   void _clearUIOutput() {
-    tabExpandController.showCode();
+    tabExpandController.hidePanel();
     executionService.replaceHtml('');
   }
 
@@ -373,10 +469,10 @@ class WorkshopUi extends EditorUi {
   }
 
   void _buildStepsPopupMenu() {
-    final DivElement stepLabelContainer =
+    final stepLabelContainer =
         querySelector('#steps-menu-items')! as DivElement;
     stepLabelContainer.children = [];
-    for (int step = _workshopState.totalSteps; step > 0; step--) {
+    for (var step = _workshopState.totalSteps; step > 0; step--) {
       final stepmenuitem = AnchorElement()
         ..id = ('step-menu-$step')
         ..classes.add('step-menu-item')
@@ -413,7 +509,7 @@ class WorkshopUi extends EditorUi {
         path: ghPath,
       );
     }
-    throw ('Invalid parameters provided. Use either "webserver" or '
+    throw StateError('Invalid parameters provided. Use either "webserver" or '
         '"gh_owner", "gh_repo", "gh_ref", and "gh_path"');
   }
 
@@ -422,7 +518,7 @@ class WorkshopUi extends EditorUi {
     final input = SourceRequest()..source = originalSource;
     formatButton.disabled = true;
 
-    final request = dartServices.format(input).timeout(serviceCallTimeout);
+    final request = dartServices.format(input).timeout(formatServiceTimeout);
     return request.then((FormatResponse result) {
       busyLight.reset();
       formatButton.disabled = false;
@@ -438,7 +534,7 @@ class WorkshopUi extends EditorUi {
       } else {
         showSnackbar('No formatting changes.');
       }
-    }).catchError((e) {
+    }).catchError((Object e) {
       busyLight.reset();
       formatButton.disabled = false;
       logger.severe(e);
@@ -452,7 +548,7 @@ class WorkshopUi extends EditorUi {
       docsButton: editorDocsTab,
       clearConsoleButton: clearConsoleButton,
       closeButton: closePanelButton,
-      iframeElement: _frame,
+      iFrameProvider: () => _frame,
       docsElement: _documentationElement,
       consoleElement: _consoleElement,
       topSplit: _editorPanel,
@@ -482,9 +578,6 @@ class WorkshopUi extends EditorUi {
   @override
   void showOutput(String message, {bool error = false}) {
     _console.showOutput(message, error: error);
-    if (tabExpandController.state != TabState.console) {
-      unreadConsoleCounter.increment();
-    }
   }
 
   Future<void> _handleShowSolution() async {
@@ -493,14 +586,19 @@ class WorkshopUi extends EditorUi {
     if (solution == null) {
       showSnackbar('This step has no solution.');
     } else {
-      final result = await dialog.showOkCancel(
-          'Show solution',
-          'Are you sure you want to show the solution? Your changes for this '
-              'step will be lost.');
-      if (result == DialogResult.ok) {
-        editor.document.updateValue(solution);
-        showSolutionButton.disabled = true;
-      }
+      solutionShownThisStep = true;
+      editor.document.updateValue(solution);
+      showSolutionButton.disabled = true;
+    }
+  }
+
+  Future<void> _showResetDialog() async {
+    final result = await dialog.showOkCancel(
+        'Reset Workshop', 'Discard saved work for all steps?');
+    if (result == DialogResult.ok) {
+      _workshopStepStorage.clearStoredWork();
+      _updateCode();
+      resetButton.setAttr('disabled', 'true');
     }
   }
 
@@ -540,7 +638,7 @@ class WorkshopState {
 
   set currentStepIndex(int stepIndex) {
     if (stepIndex < 0 || stepIndex >= workshop.steps.length) {
-      throw ('Invalid step index: $stepIndex');
+      throw StateError('Invalid step index: $stepIndex');
     }
     _currentStepIndex = stepIndex;
     _controller.add(workshop.steps[stepIndex]);
@@ -569,4 +667,43 @@ class WorkshopDartSourceProvider implements ContextBase {
 
   @override
   bool get isFocused => true;
+}
+
+/// A class to store user's workshop steps in localStorage.
+class WorkshopStepStorage {
+  final String _storedWorkshopId;
+
+  WorkshopStepStorage(this._storedWorkshopId);
+
+  bool get hasStoredWork => window.localStorage.containsKey(_storedWorkshopId);
+
+  String get workshopId => _storedWorkshopId;
+
+  String stepKey(int stepNumber) => 'step#$stepNumber';
+
+  String? loadStep(int stepNumber) {
+    if (hasStoredWork) {
+      final data = window.localStorage[_storedWorkshopId]!;
+      final stepkey = stepKey(stepNumber);
+      final usersWorkshopSteps = json.decode(data) as Map<String, dynamic>;
+      if (usersWorkshopSteps.containsKey(stepkey)) {
+        return usersWorkshopSteps[stepkey] as String;
+      }
+    }
+    return null;
+  }
+
+  void saveStep(int stepNumber, String code) {
+    var usersWorkshopSteps = <String, dynamic>{};
+    if (hasStoredWork) {
+      final data = window.localStorage[_storedWorkshopId]!;
+      usersWorkshopSteps = json.decode(data) as Map<String, dynamic>;
+    }
+    usersWorkshopSteps[stepKey(stepNumber)] = code;
+    window.localStorage[_storedWorkshopId] = json.encode(usersWorkshopSteps);
+  }
+
+  void clearStoredWork() {
+    window.localStorage.remove(_storedWorkshopId);
+  }
 }

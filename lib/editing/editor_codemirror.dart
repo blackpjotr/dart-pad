@@ -13,6 +13,7 @@ import 'package:codemirror/codemirror.dart' hide Position;
 import 'package:codemirror/codemirror.dart' as pos show Position;
 import 'package:codemirror/hints.dart';
 
+import 'codemirror_options.dart';
 import 'editor.dart' hide Position;
 import 'editor.dart' as ed show Position;
 
@@ -34,77 +35,10 @@ class CodeMirrorFactory extends EditorFactory {
   List<String> get themes => CodeMirror.themes;
 
   @override
-  Editor createFromElement(html.Element element, {Map? options}) {
-    options ??= {
-      'continueComments': {'continueLineComment': false},
-      'autofocus': false,
-      'autoCloseTags': {
-        'whenOpening': true,
-        'whenClosing': true,
-        'indentTags':
-            [] // Android Studio/VSCode do not auto indent/add newlines for any completed tags
-        //  The default (below) would be the following tags cause indenting and blank line inserted
-        // ['applet', 'blockquote', 'body', 'button', 'div', 'dl', 'fieldset',
-        //    'form', 'frameset', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head',
-        //    'html', 'iframe', 'layer', 'legend', 'object', 'ol', 'p', 'select', \
-        //    'table', 'ul']
-      },
-      'autoCloseBrackets': true,
-      'matchBrackets': true,
-      'tabSize': 2,
-      'lineWrapping': true,
-      'indentUnit': 2,
-      'cursorHeight': 0.85,
-      // Increase the number of lines that are rendered above and before what's
-      // visible.
-      'viewportMargin': 100,
-      //'gutters': [_gutterId],
-      'extraKeys': {
-        'Cmd-/': 'toggleComment',
-        'Ctrl-/': 'toggleComment',
-        'Shift-Tab': 'indentLess',
-        'Tab': 'indentIfMultiLineSelectionElseInsertSoftTab',
-        'Ctrl-F': 'weHandleElsewhere',
-        'Ctrl-H': 'weHandleElsewhere',
-        'Cmd-F': 'weHandleElsewhere',
-        'Cmd-H': 'weHandleElsewhere',
-        'Shift-Ctrl-G': 'weHandleElsewhere',
-        'Ctrl-G': 'weHandleElsewhere',
-        'Cmd-G': 'weHandleElsewhere',
-        'Shift-Cmd-G': 'weHandleElsewhere',
-        'F4': 'weHandleElsewhere',
-        'Shift-F4': 'weHandleElsewhere',
-        // vscode folding key combos (pc/mac)
-        'Shift-Ctrl-[': 'ourFoldWithCursorToStart',
-        'Cmd-Alt-[': 'ourFoldWithCursorToStart',
-        'Shift-Ctrl-]': 'unfold',
-        'Cmd-Alt-]': 'unfold',
-        'Shift-Ctrl-Alt-[':
-            'foldAll', // made our own keycombo since VSCode and AndroidStudio's
-        'Shift-Cmd-Alt-[': 'foldAll', //  are taken by browser
-        'Shift-Ctrl-Alt-]': 'unfoldAll',
-        'Shift-Cmd-Alt-]': 'unfoldAll',
-      },
-      'foldGutter': true,
-      'foldOptions': {
-        'minFoldSize': 1,
-        'widget': '\u00b7\u00b7\u00b7', // like '...', but middle dots
-      },
-      'matchTags': {
-        'bothTags': true,
-      },
-      'gutters': ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
-      'highlightSelectionMatches': {
-        'style': 'highlight-selection-matches',
-        'showToken': false,
-        'annotateScrollbar': true,
-      },
-      'hintOptions': {'completeSingle': false},
-      'scrollbarStyle': 'simple',
-      //'lint': true,
-      'theme': 'zenburn', // ambiance, vibrant-ink, monokai, zenburn
-    };
-
+  Editor createFromElement(
+    html.Element element, {
+    Map<String, Object> options = codeMirrorOptions,
+  }) {
     final editor = CodeMirror.fromElement(element, options: options);
     CodeMirror.addCommand('goLineLeft', _handleGoLineLeft);
     CodeMirror.addCommand('indentIfMultiLineSelectionElseInsertSoftTab',
@@ -124,7 +58,7 @@ class CodeMirrorFactory extends EditorFactory {
   }
 
   /// used to set the search update callback that will be called when
-  /// the editors update their search annonations
+  /// the editors update their search annotations
   @override
   void registerSearchUpdateCallback(SearchUpdateCallback sac) {
     _searchUpdateCallback = sac;
@@ -140,7 +74,7 @@ class CodeMirrorFactory extends EditorFactory {
   // (this gives us a more typical coding editor behavior)
   void _indentIfMultiLineSelectionElseInsertSoftTab(CodeMirror editor) {
     if (editor.doc.somethingSelected()) {
-      final String? selection = editor.doc.getSelection('\n');
+      final selection = editor.doc.getSelection('\n');
       if (selection != null && selection.contains('\n')) {
         // Multi-line selection
         editor.execCommand('indentMore');
@@ -248,7 +182,7 @@ class _CodeMirrorEditor extends Editor {
 
   late bool _lookingForQuickFix;
 
-  _CodeMirrorEditor._(CodeMirrorFactory factory, this.cm) : super(factory) {
+  _CodeMirrorEditor._(CodeMirrorFactory super.factory, this.cm) {
     _document = _CodeMirrorDocument._(this, cm.doc);
     _instances[cm.jsProxy] = this;
   }
@@ -282,7 +216,7 @@ class _CodeMirrorEditor extends Editor {
   @override
   Map<String, dynamic> startSearch(String query, bool reverse,
       bool highlightOnly, bool matchCase, bool wholeWord, bool regEx) {
-    final JsObject? jsobj = cm.callArgs('searchFromDart', [
+    final jsobj = cm.callArgs('searchFromDart', [
       query,
       reverse,
       highlightOnly,
@@ -320,15 +254,14 @@ class _CodeMirrorEditor extends Editor {
 
   @override
   String? getTokenWeAreOnOrNear([String? regEx]) {
-    final String? foundToken =
-        cm.callArg('getTokenWeAreOnOrNear', regEx) as String?;
+    final foundToken = cm.callArg('getTokenWeAreOnOrNear', regEx) as String?;
     return foundToken;
   }
 
   @override
   Map<String, dynamic> getMatchesFromSearchQueryUpdatedCallback() {
-    final JsObject? jsobj = cm.callArg(
-        'getMatchesFromSearchQueryUpdatedCallback', null) as JsObject?;
+    final jsobj = cm.callArg('getMatchesFromSearchQueryUpdatedCallback', null)
+        as JsObject?;
     if (jsobj != null) {
       return {
         'total': (jsobj['total'] ?? 0) as int,
@@ -416,6 +349,9 @@ class _CodeMirrorEditor extends Editor {
   Stream<html.MouseEvent> get onMouseDown => cm.onMouseDown;
 
   @override
+  Stream<void> get onVimModeChange => cm.onEvent('vim-mode-change');
+
+  @override
   Point getCursorCoords({ed.Position? position}) {
     JsObject? js;
     if (position == null) {
@@ -471,7 +407,7 @@ class _CodeMirrorDocument extends Document<_CodeMirrorEditor> {
   /// programmatically change the `value` field.
   String? _lastSetValue;
 
-  _CodeMirrorDocument._(_CodeMirrorEditor editor, this.doc) : super(editor);
+  _CodeMirrorDocument._(super.editor, this.doc);
 
   _CodeMirrorEditor get parent => editor;
 
@@ -535,7 +471,11 @@ class _CodeMirrorDocument extends Document<_CodeMirrorEditor> {
   @override
   void setAnnotations(List<Annotation> annotations) {
     for (final marker in doc.getAllMarks()) {
-      marker.clear();
+      if (marker.jsProxy != null && marker.jsProxy!['atomic'] != true) {
+        // Only clear non-atomic markers (atomic markers are collapsed code
+        // blocks created by the user).
+        marker.clear();
+      }
     }
 
     for (final widget in widgets) {
@@ -578,7 +518,7 @@ class _CodeMirrorDocument extends Document<_CodeMirrorEditor> {
       ed.Position(position.line!, position.ch!);
 
   @override
-  Stream get onChange {
+  Stream<void> get onChange {
     return doc.onChange.where((_) {
       if (value != _lastSetValue) {
         _lastSetValue = null;

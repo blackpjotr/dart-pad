@@ -20,7 +20,6 @@ import 'core/keys.dart';
 import 'core/modules.dart';
 import 'dart_pad.dart';
 import 'documentation.dart';
-import 'editing/codemirror_options.dart';
 import 'editing/editor_codemirror.dart';
 import 'elements/analysis_results_controller.dart';
 import 'elements/bind.dart';
@@ -31,6 +30,7 @@ import 'elements/dialog.dart';
 import 'elements/elements.dart';
 import 'elements/material_tab_controller.dart';
 import 'elements/tab_expand_controller.dart';
+import 'github.dart';
 import 'modules/codemirror_module.dart';
 import 'modules/dart_pad_module.dart';
 import 'modules/dartservices_module.dart';
@@ -86,6 +86,8 @@ class Playground extends EditorUi implements GistContainer, GistController {
   bool _rightSplitterConfigured = false;
   TabExpandController? _tabExpandController;
 
+  late GitHubUIController _githubUIController;
+
   @override
   late PlaygroundContext context;
   Layout? _layout;
@@ -110,6 +112,9 @@ class Playground extends EditorUi implements GistContainer, GistController {
     _checkLocalStorage();
     _initPlayground();
     _initBusyLights();
+
+    _githubUIController = GitHubUIController(this);
+
     _initGistNameHeader();
     _initGistStorage();
     _initLayoutDetection();
@@ -182,7 +187,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
     });
   }
 
-  static void _toggleMenu(MDCMenu? menu) => menu?.open = !menu.open!;
+  static void toggleMenu(MDCMenu? menu) => menu?.open = !menu.open!;
 
   void _initButtons() {
     MDCButton(querySelector('#new-button') as ButtonElement)
@@ -203,7 +208,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
 
     MDCButton(_samplesDropdownButton)
         .onClick
-        .listen((e) => _toggleMenu(_samplesMenu));
+        .listen((e) => toggleMenu(_samplesMenu));
 
     runButton = MDCButton(querySelector('#run-button') as ButtonElement)
       ..onClick.listen((_) {
@@ -218,7 +223,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
 
     MDCButton(_channelsDropdownButton)
         .onClick
-        .listen((e) => _toggleMenu(_channelsMenu));
+        .listen((e) => toggleMenu(_channelsMenu));
 
     _searchController = SearchController(editorFactory, editor, snackbar);
   }
@@ -234,13 +239,16 @@ class Playground extends EditorUi implements GistContainer, GistController {
           Layout.flutter),
       Sample('85e77d36533b16647bf9b6eb8c03296d', 'Implicit animations',
           Layout.flutter),
+      Sample('ecabed4a17a3aad8bee7c6327e472fc8', 'Padracing', Layout.flutter),
       Sample('d57c6c898dabb8c6fb41018588b8cf73', 'Firebase Nanochat',
           Layout.flutter),
       Sample(
           '493c8b3ef8931cbac3fbbe5c04b9c4cf', 'Google Fonts', Layout.flutter),
       Sample('a133148221a8cbacbcef8bc77a6c82ec', 'Provider', Layout.flutter),
+      Sample('ef06ab3ce0b822e6cc5db0575248e6e2', 'Riverpod', Layout.flutter),
       Sample(
           'fdd369962f4ff6700a83c8a540fd6c4c', 'Flutter Bloc', Layout.flutter),
+      Sample('4a546fc44db8aca351bfe791e251acc2', 'GoRouter', Layout.flutter),
       Sample('c0f7c578204d61e08ec0fbc4d63456cd', 'Hello World', Layout.dart),
       Sample('d3bd83918d21b6d5f778bdc69c3d36d6', 'Fibonacci', Layout.dart),
       Sample('4a68e553746602d851ab3da6aeafc3dd', 'HTTP requests', Layout.dart),
@@ -267,7 +275,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
       ..hoistMenuToBody();
 
     samplesMenu.listen('MDCMenu:selected', (e) {
-      final index = (e as CustomEvent).detail['index'] as int;
+      final index = ((e as CustomEvent).detail as Map)['index'] as int;
       final gistId = samples.elementAt(index).gistId;
       showGist(gistId);
     });
@@ -283,9 +291,9 @@ class Playground extends EditorUi implements GistContainer, GistController {
       ..hoistMenuToBody();
     MDCButton(moreMenuButton, isIcon: true)
         .onClick
-        .listen((_) => _toggleMenu(moreMenu));
+        .listen((_) => toggleMenu(moreMenu));
     moreMenu.listen('MDCMenu:selected', (e) {
-      final idx = (e as CustomEvent).detail['index'] as int?;
+      final idx = ((e as CustomEvent).detail as Map)['index'] as int?;
       switch (idx) {
         case 0:
           _showSharingPage();
@@ -345,6 +353,11 @@ class Playground extends EditorUi implements GistContainer, GistController {
                   ..text =
                       'Use Flutter version ${channel.flutterVersion} and Dart '
                           'version ${channel.dartVersion}',
+                if (channel.experiments.isNotEmpty)
+                  ParagraphElement()
+                    ..classes.add('mdc-list-item__details')
+                    ..text = '+ Dart experiments: '
+                        "--enable-experiment=${channel.experiments.reduce((value, element) => '$value,$element')}",
               ],
           ],
       ])
@@ -364,6 +377,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
       Channel.fromVersion('stable'),
       Channel.fromVersion('beta'),
       Channel.fromVersion('old'),
+      Channel.fromVersion('master'),
       Channel.fromVersion('dev', hidden: true),
     ]);
 
@@ -384,9 +398,10 @@ class Playground extends EditorUi implements GistContainer, GistController {
     _channelsMenu?.listen('MDCMenu:selected', _handleChannelsMenuSelected);
   }
 
-  void _handleChannelsMenuSelected(e) {
-    final index = (e as CustomEvent).detail['index'] as int;
-    final channel = Channel.urlMapping.keys.toList()[index];
+  void _handleChannelsMenuSelected(Event e) {
+    final index = ((e as CustomEvent).detail as Map)['index'] as int;
+    // Use menu index BACK into channels array it was created from to get channel name.
+    final channel = channels[index].name;
     _handleChannelSwitched(channel);
   }
 
@@ -478,7 +493,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
   MaterialTabController _buildTabs() {
     final webLayoutTabController =
         MaterialTabController(MDCTabBar(_webTabBar.element));
-    for (final name in ['dart', 'html', 'css']) {
+    for (final name in const ['dart', 'html', 'css']) {
       webLayoutTabController.registerTab(
           TabElement(querySelector('#$name-tab')!, name: name, onSelect: () {
         ga.sendEvent('edit', name);
@@ -523,8 +538,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
     deps[GistLoader] = GistLoader.defaultFilters();
 
     // Set up CodeMirror
-    editor = (editorFactory as CodeMirrorFactory)
-        .createFromElement(_editorHost, options: codeMirrorOptions)
+    editor = (editorFactory as CodeMirrorFactory).createFromElement(_editorHost)
       ..theme = 'darkpad'
       ..mode = 'dart'
       ..keyMap = window.localStorage['codemirror_keymap'] ?? 'default'
@@ -541,23 +555,18 @@ class Playground extends EditorUi implements GistContainer, GistController {
     context.onDartDirty.listen((_) => busyLight.on());
     context.onDartReconcile.listen((_) => performAnalysis());
 
-    final Property htmlFile =
-        GistFileProperty(_editableGist.getGistFile('index.html'));
-    final Property htmlDoc =
-        EditorDocumentProperty(context.htmlDocument, 'html');
+    final htmlFile = GistFileProperty(_editableGist.getGistFile('index.html'));
+    final htmlDoc = EditorDocumentProperty(context.htmlDocument, 'html');
     bind(htmlDoc, htmlFile);
     bind(htmlFile, htmlDoc);
 
-    final Property cssFile =
-        GistFileProperty(_editableGist.getGistFile('styles.css'));
-    final Property cssDoc = EditorDocumentProperty(context.cssDocument, 'css');
+    final cssFile = GistFileProperty(_editableGist.getGistFile('styles.css'));
+    final cssDoc = EditorDocumentProperty(context.cssDocument, 'css');
     bind(cssDoc, cssFile);
     bind(cssFile, cssDoc);
 
-    final Property dartFile =
-        GistFileProperty(_editableGist.getGistFile('main.dart'));
-    final Property dartDoc =
-        EditorDocumentProperty(context.dartDocument, 'dart');
+    final dartFile = GistFileProperty(_editableGist.getGistFile('main.dart'));
+    final dartDoc = EditorDocumentProperty(context.dartDocument, 'dart');
     bind(dartDoc, dartFile);
     bind(dartFile, dartDoc);
 
@@ -603,9 +612,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
       editor.showCompletions();
     }, 'Completion');
 
-    keys.bind(['shift-ctrl-f', 'shift-macctrl-f'], () {
-      _format();
-    }, 'Format');
+    keys.bind(['shift-ctrl-f', 'shift-macctrl-f'], _format, 'Format');
 
     document.onKeyUp.listen((e) {
       if (editor.completionActive ||
@@ -717,6 +724,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
 
   void showGist(String gistId) {
     clearOutput();
+    clearUI();
 
     if (!isLegalGistId(gistId)) {
       showHome();
@@ -733,6 +741,9 @@ class Playground extends EditorUi implements GistContainer, GistController {
     if (_gistIdInProgress == gistId) {
       return;
     }
+
+    _githubUIController.hideGistStarredButton();
+
     // Don't auto-run if we're re-loading some unsaved edits; the gist might
     // have halting issues (#384).
     var loadedFromSaved = false;
@@ -755,12 +766,16 @@ class Playground extends EditorUi implements GistContainer, GistController {
       if (_gistStorage.hasStoredGist && _gistStorage.storedId == gistId) {
         loadedFromSaved = true;
 
+        showSnackbar('Loading local edit copy of this gist');
+
         final storedGist = _gistStorage.getStoredGist()!;
         _editableGist.description = storedGist.description;
         for (final file in storedGist.files) {
           _editableGist.getGistFile(file.name).content = file.content;
         }
       }
+
+      _githubUIController.getStarReportOnLoadingGist(gistId);
 
       clearOutput();
 
@@ -773,7 +788,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
           }
         }).catchError((e) => null);
       });
-    }).catchError((e) {
+    }).catchError((Object e) {
       final message = 'Error loading gist $gistId.';
       showSnackbar(message);
       _logger.severe('$message: $e');
@@ -796,7 +811,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
     final input = SourceRequest()..source = originalSource;
     _formatButton.disabled = true;
 
-    final request = dartServices.format(input).timeout(serviceCallTimeout);
+    final request = dartServices.format(input).timeout(formatServiceTimeout);
     return request.then((FormatResponse result) {
       busyLight.reset();
       _formatButton.disabled = false;
@@ -812,7 +827,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
       } else {
         showSnackbar('No formatting changes.');
       }
-    }).catchError((e) {
+    }).catchError((Object e) {
       busyLight.reset();
       _formatButton.disabled = false;
       _logger.severe(e);
@@ -832,6 +847,10 @@ class Playground extends EditorUi implements GistContainer, GistController {
     _rightConsole.clear();
     _leftConsole.clear();
     _unreadConsoleCounter.clear();
+  }
+
+  void clearUI() {
+    executionService.replaceHtml('');
   }
 
   @override
@@ -1018,7 +1037,7 @@ class Playground extends EditorUi implements GistContainer, GistController {
     _gistStorage.clearStoredGist();
     _editableGist.reset();
     // Delay to give time for the model change event to propagate through
-    // to the editor component (which is where `_performAnalysis()` pulls
+    // to the editor component (which is where `performAnalysis()` pulls
     // the Dart source from).
     Timer.run(performAnalysis);
     clearOutput();
@@ -1061,81 +1080,71 @@ class NewPadDialog {
   final MDCDialog _mdcDialog;
   final MDCRipple _dartButton;
   final MDCRipple _flutterButton;
-  final MDCButton _createButton;
   final MDCButton _cancelButton;
   final MDCSwitch _htmlSwitch;
-  final DElement _htmlSwitchContainer;
 
   NewPadDialog()
       : assert(querySelector('#new-pad-dialog') != null),
         assert(querySelector('#new-pad-select-dart') != null),
         assert(querySelector('#new-pad-select-flutter') != null),
         assert(querySelector('#new-pad-cancel-button') != null),
-        assert(querySelector('#new-pad-create-button') != null),
-        assert(querySelector('#new-pad-html-switch-container') != null),
-        assert(querySelector('#new-pad-html-switch-container .mdc-switch') !=
-            null),
+        assert(querySelector('#new-pad-html-switch') != null),
         _mdcDialog = MDCDialog(querySelector('#new-pad-dialog')!),
         _dartButton = MDCRipple(querySelector('#new-pad-select-dart')!),
         _flutterButton = MDCRipple(querySelector('#new-pad-select-flutter')!),
         _cancelButton =
             MDCButton(querySelector('#new-pad-cancel-button') as ButtonElement),
-        _createButton =
-            MDCButton(querySelector('#new-pad-create-button') as ButtonElement),
-        _htmlSwitchContainer =
-            DElement(querySelector('#new-pad-html-switch-container')!),
-        _htmlSwitch = MDCSwitch(
-            querySelector('#new-pad-html-switch-container .mdc-switch'));
-
-  Layout? get selectedLayout {
-    if (_dartButton.root.classes.contains('selected')) {
-      return _htmlSwitch.checked! ? Layout.html : Layout.dart;
-    }
-
-    if (_flutterButton.root.classes.contains('selected')) {
-      return Layout.flutter;
-    }
-
-    return null;
-  }
+        _htmlSwitch = MDCSwitch(querySelector('#new-pad-html-switch'));
 
   Future<Layout?> show() {
-    _createButton.toggleAttr('disabled', true);
-
     final completer = Completer<Layout?>();
+
+    void completeDart() {
+      completer.complete(_htmlSwitch.checked! ? Layout.html : Layout.dart);
+    }
+
     final dartSub = _dartButton.root.onClick.listen((_) {
-      _flutterButton.root.classes.remove('selected');
-      _dartButton.root.classes.add('selected');
-      _createButton.toggleAttr('disabled', false);
-      _htmlSwitchContainer.toggleClass('hide', false);
-      _htmlSwitch.disabled = false;
+      completeDart();
+    });
+    final dartKeydownSub = _dartButton.root.onKeyDown.listen((event) {
+      if (event.key == 'Enter') {
+        completeDart();
+      }
+    });
+    final dartKeyupSub = _dartButton.root.onKeyUp.listen((event) {
+      if (event.key == ' ' || event.key == 'Spacebar') {
+        completeDart();
+      }
     });
 
     final flutterSub = _flutterButton.root.onClick.listen((_) {
-      _dartButton.root.classes.remove('selected');
-      _flutterButton.root.classes.add('selected');
-      _createButton.toggleAttr('disabled', false);
-      _htmlSwitchContainer.toggleClass('hide', true);
+      completer.complete(Layout.flutter);
+    });
+    final flutterKeydownSub = _flutterButton.root.onKeyDown.listen((event) {
+      if (event.key == 'Enter') {
+        completer.complete(Layout.flutter);
+      }
+    });
+    final flutterKeyupSub = _flutterButton.root.onKeyUp.listen((event) {
+      if (event.key == ' ' || event.key == 'Spacebar') {
+        completer.complete(Layout.flutter);
+      }
     });
 
     final cancelSub = _cancelButton.onClick.listen((_) {
       completer.complete(null);
     });
 
-    final createSub = _createButton.onClick.listen((_) {
-      completer.complete(selectedLayout);
-    });
-
     _mdcDialog.open();
 
     void handleClosing(Event _) {
-      _flutterButton.root.classes.remove('selected');
-      _dartButton.root.classes.remove('selected');
-      _htmlSwitchContainer.toggleClass('hide', true);
       dartSub.cancel();
+      dartKeydownSub.cancel();
+      dartKeyupSub.cancel();
       flutterSub.cancel();
+      flutterKeydownSub.cancel();
+      flutterKeyupSub.cancel();
       cancelSub.cancel();
-      createSub.cancel();
       _mdcDialog.unlisten('MDCDialog:closing', handleClosing);
     }
 

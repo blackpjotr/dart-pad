@@ -4,9 +4,12 @@ import 'dart:html';
 import 'package:logging/logging.dart';
 import 'package:mdc_web/mdc_web.dart';
 import 'package:meta/meta.dart';
+import 'package:path/path.dart' as path;
+import 'package:pub_semver/pub_semver.dart' as semver;
 
 import '../context.dart';
 import '../dart_pad.dart';
+import '../editing/codemirror_options.dart';
 import '../editing/editor.dart';
 import '../elements/analysis_results_controller.dart';
 import '../elements/button.dart';
@@ -28,6 +31,10 @@ abstract class EditorUi {
   late final Editor editor;
   late final MDCButton runButton;
   late final ExecutionService executionService;
+
+  /// The current SDK versions being used to compile Dart / Flutter code.
+  /// This value changes when the `updateVersions()` method is called.
+  late Version version;
 
   /// The dialog box for information like pub package versions.
   final Dialog dialog = Dialog();
@@ -52,9 +59,22 @@ abstract class EditorUi {
   @mustCallSuper
   void initKeyBindings() {
     keys.bind(['ctrl-enter', 'macctrl-enter'], handleRun, 'Run');
-    keys.bind(['shift-ctrl-/', 'shift-macctrl-/'], () {
-      showKeyboardDialog();
-    }, 'Keyboard Shortcuts');
+    keys.bind(['shift-ctrl-/', 'shift-macctrl-/'], showKeyboardDialog,
+        'Keyboard Shortcuts');
+
+    _initEscapeTabSwitching();
+  }
+
+  // When switching to vim-insert mode, disable esc tab and esc shift-tab
+  // as the esc key is required to exit the mode
+  void _initEscapeTabSwitching() {
+    editor.onVimModeChange.listen((e) {
+      if (editor.keyMap == 'vim-insert') {
+        editor.setOption('extraKeys', extraKeysWithoutEscapeTab);
+      } else {
+        editor.setOption('extraKeys', extraKeysWithEscapeTab);
+      }
+    });
   }
 
   Future<void> showKeyboardDialog() async {
@@ -126,7 +146,7 @@ abstract class EditorUi {
 
     final lines = Lines(input.source);
 
-    final request = dartServices.analyze(input).timeout(serviceCallTimeout);
+    final request = dartServices.analyze(input).timeout(analyzeServiceTimeout);
     analysisRequest = request;
 
     try {
@@ -165,7 +185,8 @@ abstract class EditorUi {
         displayIssues([
           AnalysisIssue()
             ..kind = 'error'
-            ..line = 1
+            ..line =
+                -1 // set invalid line number, so NO line # will be displayed
             ..message = message
         ]);
       } else {
@@ -189,26 +210,28 @@ abstract class EditorUi {
       if (shouldCompileDDC) {
         final response = await dartServices
             .compileDDC(compileRequest)
-            .timeout(longServiceCallTimeout);
+            .timeout(compileServiceTimeout);
 
         _sendCompilationTiming(compilationTimer.elapsedMilliseconds);
         clearOutput();
 
         await executionService.execute(
-          context.htmlSource,
-          context.cssSource,
-          response.result,
-          modulesBaseUrl: response.modulesBaseUrl,
-          addRequireJs: true,
-          addFirebaseJs: shouldAddFirebaseJs,
-          // TODO(srawlins): Determine if we need to destroy the frame when
-          // changing channels.
-          destroyFrame: false,
-        );
+            context.htmlSource, context.cssSource, response.result,
+            modulesBaseUrl: response.modulesBaseUrl,
+            addRequireJs: true,
+            addFirebaseJs: shouldAddFirebaseJs,
+            // TODO(srawlins): Determine if we need to destroy the frame when
+            // changing channels.
+            // TODO(ryjohn) Determine how to preserve the iframe
+            // https://github.com/dart-lang/dart-pad/issues/2269
+            destroyFrame: true,
+            useLegacyCanvasKit:
+                _shouldUseLegacyCanvasKit(version.flutterSdkVersion),
+            canvasKitBaseUrl: _createCanvasKitBaseUrl(version.engineVersion));
       } else {
         final response = await dartServices
             .compile(compileRequest)
-            .timeout(longServiceCallTimeout);
+            .timeout(compileServiceTimeout);
 
         _sendCompilationTiming(compilationTimer.elapsedMilliseconds);
         clearOutput();
@@ -217,7 +240,9 @@ abstract class EditorUi {
           context.htmlSource,
           context.cssSource,
           response.result,
-          destroyFrame: false,
+          // TODO(ryjohn) Determine how to preserve the iframe
+          // https://github.com/dart-lang/dart-pad/issues/2269
+          destroyFrame: true,
         );
       }
       return true;
@@ -234,13 +259,18 @@ abstract class EditorUi {
   }
 
   /// Updates the Flutter and Dart SDK versions in the bottom right.
-  void updateVersions() async {
+  Future<void> updateVersions() async {
     try {
       final response = await dartServices.version();
+
+      // Update the version information for this editor.
+      version = Version(response.flutterDartVersion, response.flutterVersion,
+          response.flutterEngineSha);
+
       // "Based on Flutter 1.19.0-4.1.pre Dart SDK 2.8.4"
-      final versionText = 'Based on Flutter ${response.flutterVersion}'
+      querySelector('#dartpad-version')?.text =
+          'Based on Flutter ${response.flutterVersion}'
           ' Dart SDK ${response.sdkVersionFull}';
-      querySelector('#dartpad-version')!.text = versionText;
       if (response.packageVersions.isNotEmpty) {
         _packageInfo.clear();
         _packageInfo.addAll(response.packageInfo);
@@ -271,13 +301,29 @@ abstract class EditorUi {
       editor.resize();
     }).observe(element);
   }
+
+  static String _createCanvasKitBaseUrl(String engineSha) {
+    const baseUrl = 'https://www.gstatic.com/flutter-canvaskit/';
+    return path.join(baseUrl, '$engineSha/');
+  }
+
+  // A new URL for CanvasKit was introduced in 3.10, use the legacy
+  // version if the Flutter version is older than that.
+  static bool _shouldUseLegacyCanvasKit(String flutterVersion) {
+    final version = semver.Version.parse(flutterVersion);
+    return version.major == 3 && version.minor < 10;
+  }
 }
 
 class Channel {
   final String name;
   final String dartVersion;
   final String flutterVersion;
+  final String engineVersion;
   final bool hidden;
+
+  /// SDK experiment flags enabled for this channel.
+  final List<String> experiments;
 
   static Future<Channel> fromVersion(String name, {bool hidden = false}) async {
     var rootUrl = urlMapping[name];
@@ -292,6 +338,8 @@ class Channel {
       dartVersion: versionResponse.sdkVersionFull,
       flutterVersion: versionResponse.flutterVersion,
       hidden: hidden,
+      experiments: versionResponse.experiment,
+      engineVersion: versionResponse.flutterEngineSha,
     );
   }
 
@@ -299,6 +347,7 @@ class Channel {
     'stable': stableServerUrl,
     'beta': betaServerUrl,
     'old': oldServerUrl,
+    'master': masterServerUrl,
     'dev': devServerUrl,
   };
 
@@ -306,7 +355,9 @@ class Channel {
     required this.name,
     required this.dartVersion,
     required this.flutterVersion,
+    required this.engineVersion,
     required this.hidden,
+    required this.experiments,
   });
 }
 
@@ -332,37 +383,53 @@ class KeyboardDialog {
 
   Future<DialogResult> show(Editor editor) {
     // populate with the keymap info
-    final DElement _keyMapInfoDiv =
-        DElement(querySelector('#keyboard-map-info')!);
-    final Element info = Element.html(keyMapToHtml(keys.inverseBindings));
-    _keyMapInfoDiv.clearChildren();
-    _keyMapInfoDiv.add(info);
+    final keyMapInfoDiv = DElement(querySelector('#keyboard-map-info')!);
+    final info = Element.html(keyMapToHtml(keys.inverseBindings));
+    keyMapInfoDiv.clearChildren();
+    keyMapInfoDiv.add(info);
 
     // set switch according to keyboard state
-    final String? currentKeyMap = editor.keyMap;
+    final currentKeyMap = editor.keyMap;
     _vimSwitch.checked = (currentKeyMap == 'vim');
 
     final completer = Completer<DialogResult>();
 
-    _okButton.onClick.listen((_) {
-      final bool vimset = _vimSwitch.checked!;
+    final okButtonSub = _okButton.onClick.listen((_) {
+      final vimSet = _vimSwitch.checked!;
 
       // change keyMap if needed and *remember* their choice for next startup
-      if (vimset) {
+      if (vimSet) {
         if (currentKeyMap != 'vim') editor.keyMap = 'vim';
         window.localStorage['codemirror_keymap'] = 'vim';
       } else {
         if (currentKeyMap != 'default') editor.keyMap = 'default';
         window.localStorage['codemirror_keymap'] = 'default';
+        editor.setOption('extraKeys', extraKeysWithEscapeTab);
       }
-      completer.complete(vimset ? DialogResult.yes : DialogResult.ok);
+      completer.complete(vimSet ? DialogResult.yes : DialogResult.ok);
     });
+
+    void handleClosing(Event _) {
+      completer.complete(DialogResult.cancel);
+    }
+
+    _mdcDialog.listen('MDCDialog:closing', handleClosing);
 
     _mdcDialog.open();
 
     return completer.future.then((v) {
+      okButtonSub.cancel();
+      _mdcDialog.unlisten('MDCDialog:closing', handleClosing);
       _mdcDialog.close();
       return v;
     });
   }
+}
+
+class Version {
+  final String dartSdkVersion;
+  final String flutterSdkVersion;
+  final String engineVersion;
+
+  Version(this.dartSdkVersion, this.flutterSdkVersion, this.engineVersion);
 }

@@ -45,7 +45,7 @@ class DElement {
     element.text = value;
   }
 
-  Property get textProperty => _ElementTextProperty(element);
+  Property<String?> get textProperty => _ElementTextProperty(element);
 
   void layoutHorizontal() {
     setAttr('layout');
@@ -92,7 +92,7 @@ class DElement {
 }
 
 class DButton extends DElement {
-  DButton(ButtonElement element) : super(element);
+  DButton(ButtonElement super.element);
 
   DButton.button({String? text, String? classes})
       : super.tag('button', classes: classes) {
@@ -114,7 +114,7 @@ class DButton extends DElement {
 }
 
 class DSplash extends DElement {
-  DSplash(Element element) : super(element);
+  DSplash(super.element);
 
   void hide({bool removeOnHide = true}) {
     if (removeOnHide) {
@@ -131,7 +131,7 @@ class DBusyLight extends DElement {
 
   int _count = 0;
 
-  DBusyLight(Element element) : super(element);
+  DBusyLight(super.element);
 
   void on() {
     _count++;
@@ -186,7 +186,7 @@ class DLabel extends DElement {
 }
 
 class DOverlay extends DElement {
-  DOverlay(Element element) : super(element);
+  DOverlay(super.element);
 
   bool get visible => element.classes.contains('visible');
 
@@ -211,7 +211,7 @@ class DContentEditable extends DElement {
 }
 
 class DInput extends DElement {
-  DInput(InputElement element) : super(element);
+  DInput(InputElement super.element);
 
   DInput.input({String? type}) : super(InputElement(type: type));
 
@@ -267,7 +267,7 @@ class DToast extends DElement {
 }
 
 class GlassPane extends DElement {
-  final _controller = StreamController.broadcast();
+  final _controller = StreamController<void>.broadcast();
 
   GlassPane() : super.tag('div') {
     element.classes.toggle('glass-pane', true);
@@ -293,7 +293,7 @@ class GlassPane extends DElement {
 
   bool get isShowing => document.body!.children.contains(element);
 
-  Stream get onCancel => _controller.stream;
+  Stream<void> get onCancel => _controller.stream;
 }
 
 abstract class DDialog extends DElement {
@@ -359,7 +359,7 @@ abstract class DDialog extends DElement {
   bool get isShowing => document.body!.children.contains(element);
 }
 
-class _ElementTextProperty implements Property {
+class _ElementTextProperty implements Property<String?> {
   final Element element;
 
   _ElementTextProperty(this.element);
@@ -368,13 +368,12 @@ class _ElementTextProperty implements Property {
   String? get() => element.text;
 
   @override
-  void set(value) {
+  void set(String? value) {
     element.text = value == null ? '' : value.toString();
   }
 
-  // TODO:
   @override
-  Stream? get onChanged => null;
+  Stream<String?>? get onChanged => null;
 }
 
 class TabController {
@@ -396,11 +395,11 @@ class TabController {
       tabs.firstWhere((tab) => tab.hasAttr('selected'));
 
   /// This method will throw if the tabName is not the name of a current tab.
-  void selectTab(String? tabName) {
+  void selectTab(String tabName) {
     final tab = tabs.firstWhere((t) => t.name == tabName);
 
     for (final t in tabs) {
-      t.toggleAttr('selected', t == tab);
+      t.toggleAttr('selected', t.name == tab.name);
     }
 
     tab.handleSelected();
@@ -411,16 +410,18 @@ class TabController {
   Stream<TabElement> get onTabSelect => _selectedTabController.stream;
 }
 
-class TabElement extends DElement {
-  final String? name;
-  final Function? onSelect;
+typedef VoidFunction = void Function();
 
-  TabElement(Element element, {this.name, this.onSelect}) : super(element);
+class TabElement extends DElement {
+  final String name;
+  final VoidFunction onSelect;
+
+  TabElement(super.element, {required this.name, required this.onSelect});
 
   void handleSelected() {
-    if (onSelect != null) onSelect!();
+    onSelect();
   }
 
   @override
-  String toString() => name!;
+  String toString() => name;
 }

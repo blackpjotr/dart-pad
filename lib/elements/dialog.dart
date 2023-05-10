@@ -83,7 +83,7 @@ class Dialog {
     _rightButton!.text = rightButtonText;
 
     final completer = Completer<DialogResult>();
-    StreamSubscription? leftSub;
+    StreamSubscription<MouseEvent>? leftSub;
 
     if (showLeftButton) {
       _leftButton!.text = leftButtonText;
@@ -99,11 +99,18 @@ class Dialog {
       completer.complete(rightButtonResult);
     });
 
+    void handleClosing(Event _) {
+      completer.complete(DialogResult.cancel);
+    }
+
+    _mdcDialog.listen('MDCDialog:closing', handleClosing);
+
     _mdcDialog.open();
 
     return completer.future.then((v) {
       leftSub?.cancel();
       rightSub.cancel();
+      _mdcDialog.unlisten('MDCDialog:closing', handleClosing);
       _mdcDialog.close();
       return v;
     });
